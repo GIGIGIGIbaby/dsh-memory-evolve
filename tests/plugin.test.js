@@ -803,7 +803,7 @@ test('write watchdog counter: counts turns, resets on daily/project writes, hono
         id: `u${seq}`,
         turn: seq,
         // 'plugin' = 注入/唤醒回合（广播 wake followup 等），'user' = 真人回合
-        source: sourceKind === 'plugin' ? { kind: 'plugin', plugin: 'dsh-memory-evolve' } : { kind: 'user' },
+        source: sourceKind === 'plugin' ? { kind: 'plugin:dsh-memory-evolve' } : { kind: 'user' },
       },
     })
   }
@@ -859,7 +859,7 @@ test('write watchdog counter: counts turns, resets on daily/project writes, hono
   assert.equal(keyWrite.ok, true)
   assert.ok(renderFor(main).includes('记忆写入遗漏提醒'), 'key suggestion does not clear the warning')
 
-  // 插件注入回合（broadcast wake followup：source.kind=plugin）不计入欠账
+  // 插件注入回合（broadcast wake followup：source.kind=plugin:<name>）不计入欠账
   pushTurn('plugin')
   fire({ agent: main, turn: 6 })
   pushTurn('plugin')
