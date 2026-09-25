@@ -260,7 +260,9 @@ test('search docs tool: 默认禁用不注册；配置/运行时 state 开启后
 test('memory tool end-to-end add/list/replace/remove', async () => {
   const dir = tempDir()
   const ctx = fakeCtx()
-  apply(ctx, { memoryDir: dir })
+  // auto mode: this test covers the write mechanics; the suggest-mode
+  // confirmation gate for global tracks is covered further down.
+  apply(ctx, { memoryDir: dir, reviewMode: 'auto' })
   const tool = ctx.state.tools.find((t) => t.name === 'memory')
 
   const added = await tool.execute({ action: 'add', target: 'user', content: '用户喜欢简洁回答' }, fakeExec())
@@ -285,7 +287,8 @@ test('memory tool end-to-end add/list/replace/remove', async () => {
 test('memory tool archive + archived list round-trip', async () => {
   const dir = tempDir()
   const ctx = fakeCtx()
-  apply(ctx, { memoryDir: dir })
+  // auto mode: archive needs the entry on the main track (see the gate test below)
+  apply(ctx, { memoryDir: dir, reviewMode: 'auto' })
   const tool = ctx.state.tools.find((t) => t.name === 'memory')
   const execCwd = (cwd) => ({ agent: { session: { header: { cwd } } }, callId: 'c1', signal: new AbortController().signal })
 
@@ -983,6 +986,49 @@ test('memory tool key writes queue for confirmation; branches param survives the
   const other = await tool.execute({ action: 'list', target: 'key', branch: 'dev' }, exec('k4'))
   assert.equal(other.entries.length, 1)
   assert.ok(other.entries[0].includes('通用约定'))
+  clean(dir)
+})
+
+test('main-session global writes queue in suggest mode; auto mode writes through', async () => {
+  const dir = tempDir()
+  const agent = { id: 'a', session: { header: { cwd: '/proj/g' } } }
+  const exec = (callId) => ({ agent, callId, signal: new AbortController().signal })
+  // suggest mode (the default): the main session queues global writes for
+  // confirmation instead of writing MEMORY.md/USER.md straight through
+  const suggestCtx = fakeCtx()
+  apply(suggestCtx, { memoryDir: dir, reviewMode: 'suggest' })
+  const tool = suggestCtx.state.tools.find((t) => t.name === 'memory')
+  const queued = await tool.execute({ action: 'add', target: 'memory', content: '全局事实 A' }, exec('g1'))
+  assert.equal(queued.ok, true)
+  assert.ok(queued.message.includes('待确认'))
+  assert.equal('queued' in queued, false, 'queued must not leak into the output schema')
+  const queuedUser = await tool.execute({ action: 'add', target: 'user', content: '用户事实 B' }, exec('g2'))
+  assert.equal(queuedUser.ok, true)
+  assert.ok(queuedUser.message.includes('待确认'))
+  assert.equal(existsSync(join(dir, 'MEMORY.md')), false, 'global write must not land before confirmation')
+  assert.equal(existsSync(join(dir, 'USER.md')), false, 'global write must not land before confirmation')
+  const queueText = readFileSync(join(dir, 'SUGGESTIONS.jsonl'), 'utf8')
+  assert.ok(queueText.includes('全局事实 A'))
+  assert.ok(queueText.includes('用户事实 B'))
+  // the user confirms both → they land in the matching track
+  const { approveSuggestions } = await import('../lib/review.js')
+  const { SuggestionQueue } = await import('../lib/store.js')
+  const { TodoStore } = await import('../lib/todo.js')
+  const queue = new SuggestionQueue(join(dir, 'SUGGESTIONS.jsonl'))
+  const report = approveSuggestions(new MemoryStore(dir), new TodoStore(dir), queue, [1, 2], undefined)
+  assert.equal(report.remaining, 0)
+  assert.ok(readFileSync(join(dir, 'MEMORY.md'), 'utf8').includes('全局事实 A'))
+  assert.ok(readFileSync(join(dir, 'USER.md'), 'utf8').includes('用户事实 B'))
+  // daily/project are never injected / project-scoped → still direct writes
+  const daily = await tool.execute({ action: 'add', target: 'daily', content: '今日进展' }, exec('g3'))
+  assert.equal(daily.ok, true)
+  // auto mode: the user opted into direct global writes
+  const autoCtx = fakeCtx()
+  apply(autoCtx, { memoryDir: dir, reviewMode: 'auto' })
+  const autoTool = autoCtx.state.tools.find((t) => t.name === 'memory')
+  const direct = await autoTool.execute({ action: 'add', target: 'memory', content: '自动模式全局事实' }, exec('g4'))
+  assert.equal(direct.ok, true)
+  assert.ok(readFileSync(join(dir, 'MEMORY.md'), 'utf8').includes('自动模式全局事实'))
   clean(dir)
 })
 
